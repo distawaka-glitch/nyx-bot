@@ -1,5 +1,7 @@
 ﻿import asyncio
 import logging
+import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -110,9 +112,27 @@ async def on_callback(cb: CallbackQuery):
     await cb.answer()
 
 
+async def health(request):
+    return web.Response(text="ok")
+
+
+async def start_web():
+    port = int(os.environ.get("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+
 async def main():
     logging.info("bot starting...")
-    await dp.start_polling(bot)
+    await asyncio.gather(
+        start_web(),
+        dp.start_polling(bot),
+    )
 
 
 if __name__ == "__main__":
