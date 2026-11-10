@@ -77,16 +77,17 @@ async def check_username(session, username):
         async with session.get(url, headers=HEADERS, allow_redirects=True, timeout=10) as resp:
             text = await resp.text()
             
-            # 1. Если есть tgme_page_title — точно занят (обычный профиль)
-            if "tgme_page_title" in text:
-                return {"username": username, "taken": True, "status": resp.status}
-
-            # 2. Если это NFT (выставлен на продажу) — t.me содержит текст "for sale" или "выставлена на продажу"
+            # Если это NFT (выставлен на продажу)
             lower_text = text.lower()
             if "for sale" in lower_text or "выставлена на продажу" in lower_text or "unavailable" in lower_text:
                 return {"username": username, "taken": True, "status": resp.status}
 
-            # 3. Если ничего нет — свободен
+            # Любые следы профиля — занят
+            markers = ["tgme_page_title", "tgme_page_action", "tgme_page_extra", "tgme_page_context_link"]
+            if any(marker in text for marker in markers):
+                return {"username": username, "taken": True, "status": resp.status}
+
+            # Если ничего нет — свободен
             return {"username": username, "taken": False, "status": resp.status}
     except Exception as e:
         return {"username": username, "taken": None, "error": str(e)}
