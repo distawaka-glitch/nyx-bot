@@ -5,7 +5,6 @@ import string
 from config import CHECK_DELAY, CONCURRENCY, TRANSLIT, PERSONALITY_SUFFIXES
 
 TG_API = "https://t.me/{}"
-FRAG_API = "https://fragment.com/username/{}"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -78,23 +77,16 @@ async def check_username(session, username):
         async with session.get(url, headers=HEADERS, allow_redirects=True, timeout=10) as resp:
             text = await resp.text()
             
-            # Если есть tgme_page_title — точно занят (обычный профиль)
+            # 1. Если есть tgme_page_title — точно занят (обычный профиль)
             if "tgme_page_title" in text:
                 return {"username": username, "taken": True, "status": resp.status}
 
-            # Проверка Fragment (NFT, продажа, владелец)
-            frag_url = FRAG_API.format(username)
-            try:
-                async with session.get(frag_url, headers=HEADERS, allow_redirects=True, timeout=10) as frag_resp:
-                    if frag_resp.status == 200:
-                        frag_text = await frag_resp.text()
-                        # Ловим все маркеры занятости
-                        markers = ["For sale", "Unavailable", "Owned by", "On sale", "Not for sale"]
-                        if any(marker in frag_text for marker in markers):
-                            return {"username": username, "taken": True, "status": 200}
-            except:
-                pass
+            # 2. Если это NFT (выставлен на продажу) — t.me содержит текст "for sale" или "выставлена на продажу"
+            lower_text = text.lower()
+            if "for sale" in lower_text or "выставлена на продажу" in lower_text or "unavailable" in lower_text:
+                return {"username": username, "taken": True, "status": resp.status}
 
+            # 3. Если ничего нет — свободен
             return {"username": username, "taken": False, "status": resp.status}
     except Exception as e:
         return {"username": username, "taken": None, "error": str(e)}
