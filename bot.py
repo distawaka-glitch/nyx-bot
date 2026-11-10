@@ -73,13 +73,25 @@ async def cmd_find(msg: Message):
     if not filtered:
         return await status.edit_text("нет кандидатов. измени фильтры или добавь слова.")
 
-    await status.edit_text(f"проверяю {len(filtered)} юзернеймов...")
+    await status.edit_text(f"проверяю {len(filtered)} юзернеймов...\n\nстатус: запуск")
     free = []
+    current = [0]
 
     async def progress(done, total, r):
-        if done % 10 == 0 or done == total:
+        current[0] = done
+        # обновляем каждые 5 проверок или в конце
+        if done % 5 == 0 or done == total:
             try:
-                await status.edit_text(f"{done}/{total}... свободно: {len(free)}")
+                # показываем последний проверенный ник и его статус
+                mark = "✅" if r["taken"] is False else ("❌" if r["taken"] is True else "⚠️")
+                username = r["username"]
+                text = (
+                    f"проверяю {len(filtered)} юзернеймов...\n\n"
+                    f"прогресс: {done}/{total}\n"
+                    f"свободно: {len(free)}\n\n"
+                    f"сейчас: {mark} @{username}\n"
+                )
+                await status.edit_text(text[:4000])
             except:
                 pass
 
@@ -93,7 +105,11 @@ async def cmd_find(msg: Message):
         if len(free) > 80:
             text += f"\n... и ещё {len(free) - 80}"
     else:
-        text = "свободных не найдено. попробуй другие параметры."
+        text = (
+            f"свободных не найдено.\n\n"
+            f"проверено {len(filtered)}:\n" + 
+            "\n".join("@" + u for u in filtered[:80])
+        )
 
     await status.edit_text(text[:4000])
 
