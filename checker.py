@@ -1,9 +1,18 @@
-﻿import asyncio
+import asyncio
 import aiohttp
+import random
+import string
 from config import CHECK_DELAY, CONCURRENCY, TRANSLIT, PERSONALITY_SUFFIXES
 
 TG_API = "https://t.me/{}"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def transliterate(word: str) -> str:
@@ -30,14 +39,49 @@ def generate_candidates(base: str, suffixes=None, max_len=32) -> list:
     return sorted(cands)
 
 
+def generate_random(length: int, count: int = 20) -> list:
+    vowels = "aeiouy"
+    consonants = "bcdfghjklmnpqrstvwxz"
+    out = set()
+    while len(out) < count:
+        if length % 2 == 0:
+            pattern = ["c", "v"] * (length // 2)
+        else:
+            pattern = ["c", "v"] * (length // 2) + ["c"]
+        word = ""
+        for p in pattern:
+            if p == "v":
+                word += random.choice(vowels)
+            else:
+                word += random.choice(consonants)
+        if len(word) == length:
+            out.add(word)
+    return list(out)
+
+
+def generate_random_digits(length: int, count: int = 20) -> list:
+    letters = string.ascii_lowercase
+    out = set()
+    while len(out) < count:
+        word = "".join(random.choices(letters, k=length - 1))
+        word += str(random.randint(0, 9))
+        word_list = list(word)
+        random.shuffle(word_list)
+        out.add("".join(word_list))
+    return list(out)
+
+
 async def check_username(session, username):
+    url = TG_API.format(username)
     try:
-        async with session.get(TG_API.format(username), headers=HEADERS, allow_redirects=True, timeout=10) as resp:
+        async with session.get(url, headers=HEADERS, allow_redirects=True, timeout=10) as resp:
             text = await resp.text()
-            taken = 'tgme_page' in text and 'tgme_page_extra' in text
-            if "tgme_page_title" not in text:
-                taken = False
-            return {"username": username, "taken": taken, "status": resp.status}
+            if resp.status != 200:
+                return {"username": username, "taken": None, "status": resp.status}
+            if "tgme_page_title" in text:
+                return {"username": username, "taken": True, "status": resp.status}
+            else:
+                return {"username": username, "taken": False, "status": resp.status}
     except Exception as e:
         return {"username": username, "taken": None, "error": str(e)}
 
@@ -47,6 +91,7 @@ async def check_many(usernames, progress_cb=None):
     results = []
     done = 0
     total = len(usernames)
+
     async with aiohttp.ClientSession() as session:
         async def worker(u):
             nonlocal done
