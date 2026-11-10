@@ -90,8 +90,8 @@ async def check_username(session, username):
                 async with session.get(frag_url, headers=HEADERS, allow_redirects=True, timeout=10) as frag_resp:
                     if frag_resp.status == 200:
                         frag_text = await frag_resp.text()
-                        # Маркеры реальной занятости (продажа или владелец)
-                        if "This username is for sale" in frag_text or "Owned by" in frag_text:
+                        # Ищем маркер реального владельца (занят)
+                        if "Owned by" in frag_text:
                             return {"username": username, "taken": True, "status": 200}
             except:
                 pass
