@@ -77,26 +77,24 @@ async def check_username(session, username):
     try:
         async with session.get(url, headers=HEADERS, allow_redirects=True, timeout=10) as resp:
             text = await resp.text()
-            if resp.status != 200:
-                return {"username": username, "taken": None, "status": resp.status}
-
+            
             # Если есть tgme_page_title — точно занят (обычный профиль)
             if "tgme_page_title" in text:
                 return {"username": username, "taken": True, "status": resp.status}
 
-            # Проверка Fragment (только для NFT, где tgme_page_title может отсутствовать)
+            # Проверка Fragment (NFT, продажа, владелец)
             frag_url = FRAG_API.format(username)
             try:
                 async with session.get(frag_url, headers=HEADERS, allow_redirects=True, timeout=10) as frag_resp:
                     if frag_resp.status == 200:
                         frag_text = await frag_resp.text()
-                        # Ищем маркер реального владельца (занят)
-                        if "Owned by" in frag_text:
+                        # Ловим все маркеры занятости
+                        markers = ["For sale", "Unavailable", "Owned by", "On sale", "Not for sale"]
+                        if any(marker in frag_text for marker in markers):
                             return {"username": username, "taken": True, "status": 200}
             except:
                 pass
 
-            # Если ничего не нашли — свободен
             return {"username": username, "taken": False, "status": resp.status}
     except Exception as e:
         return {"username": username, "taken": None, "error": str(e)}
