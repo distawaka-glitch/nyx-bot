@@ -5,6 +5,7 @@ import string
 from config import CHECK_DELAY, CONCURRENCY, TRANSLIT, PERSONALITY_SUFFIXES
 
 TG_API = "https://t.me/{}"
+FRAG_API = "https://fragment.com/username/{}"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -78,10 +79,23 @@ async def check_username(session, username):
             text = await resp.text()
             if resp.status != 200:
                 return {"username": username, "taken": None, "status": resp.status}
+
             if "tgme_page_title" in text:
                 return {"username": username, "taken": True, "status": resp.status}
-            else:
-                return {"username": username, "taken": False, "status": resp.status}
+
+            # проверка fragment.com (NFT юзернеймы)
+            frag_url = FRAG_API.format(username)
+            try:
+                async with session.get(frag_url, headers=HEADERS, allow_redirects=True, timeout=10) as frag_resp:
+                    if frag_resp.status == 200:
+                        frag_text = await frag_resp.text()
+                        # Ищем признаки того, что ник занят/на продаже
+                        if any(x in frag_text for x in ("For sale", "Owned by", "Username", "username")):
+                            return {"username": username, "taken": True, "status": 200}
+            except:
+                pass
+
+            return {"username": username, "taken": False, "status": resp.status}
     except Exception as e:
         return {"username": username, "taken": None, "error": str(e)}
 

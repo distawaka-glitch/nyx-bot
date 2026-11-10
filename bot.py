@@ -74,7 +74,7 @@ async def cmd_find(msg: Message):
         return await status.edit_text("нет кандидатов. измени фильтры или добавь слова.")
 
     await status.edit_text(f"проверяю {len(filtered)} юзернеймов...")
-    free, taken = [], []
+    free = []
 
     async def progress(done, total, r):
         if done % 10 == 0 or done == total:
@@ -85,16 +85,16 @@ async def cmd_find(msg: Message):
 
     results = await check_many(filtered, progress_cb=progress)
     for r in results:
-        if r["taken"] is True:
-            taken.append(r["username"])
-        elif r["taken"] is False:
+        if r["taken"] is False:
             free.append(r["username"])
 
-    text = f"свободно: {len(free)}\nзанято: {len(taken)}\n\n"
     if free:
-        text += "свободные:\n" + "\n".join("@" + u for u in free[:80])
+        text = f"найдено свободных: {len(free)}\n\n" + "\n".join("@" + u for u in free[:80])
         if len(free) > 80:
             text += f"\n... и ещё {len(free) - 80}"
+    else:
+        text = "свободных не найдено. попробуй другие параметры."
+
     await status.edit_text(text[:4000])
 
 

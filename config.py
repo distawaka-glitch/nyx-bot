@@ -1,4 +1,4 @@
-﻿import os
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -7,6 +7,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 CHECK_DELAY = float(os.getenv("CHECK_DELAY", "0.8"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "5"))
+
+LENGTH_MIN = 5
+LENGTH_MAX = 6
 
 TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
