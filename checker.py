@@ -1,18 +1,45 @@
 import asyncio
-import aiohttp
 import random
 import string
-from config import CHECK_DELAY, CONCURRENCY, TRANSLIT, PERSONALITY_SUFFIXES
+from telethon import TelegramClient, functions, errors
+from telethon.sessions import StringSession
+from telethon.tl.types import InputPeerChannel
+from config import API_ID, API_HASH, TG_SESSION, TRANSLIT, PERSONALITY_SUFFIXES
 
-TG_API = "https://t.me/{}"
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-}
+client = TelegramClient(StringSession(TG_SESSION), API_ID, API_HASH)
+
+async def try_claim_username(username: str):
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, "сессия не авторизована"
+
+        result = await client(functions.channels.CreateChannelRequest(
+            title=f"claim_{username}", about="temp", megagroup=False
+        ))
+        channel = result.chats[0]
+        peer = InputPeerChannel(channel.id, channel.access_hash)
+
+        check = await client(functions.channels.CheckUsernameRequest(
+            channel=peer, username=username
+        ))
+        if not check:
+            await client(functions.channels.DeleteChannelRequest(channel=peer))
+            return False, f"@{username} занят"
+
+        await client(functions.channels.UpdateUsernameRequest(
+            channel=peer, username=username
+        ))
+        return True, f"✅ @{username} -> t.me/{username}"
+
+    except errors.rpcerrorlist.UsernameOccupiedError:
+        return False, f"@{username} занят"
+    except errors.rpcerrorlist.UsernamePurchaseAvailableError:
+        return False, f"@{username} продаётся на Fragment"
+    except errors.rpcerrorlist.FloodWaitError as e:
+        return False, f"флуд-вейт {e.seconds} сек"
+    except Exception as e:
+        return False, f"ошибка: {str(e)}"
 
 
 def transliterate(word: str) -> str:
@@ -69,50 +96,6 @@ def generate_random_digits(length: int, count: int = 20) -> list:
         random.shuffle(word_list)
         out.add("".join(word_list))
     return list(out)
-
-
-async def check_username(session, username):
-    url = TG_API.format(username)
-    try:
-        async with session.get(url, headers=HEADERS, allow_redirects=True, timeout=10) as resp:
-            text = await resp.text()
-            
-            # Если это NFT (выставлен на продажу)
-            lower_text = text.lower()
-            if "for sale" in lower_text or "выставлена на продажу" in lower_text or "unavailable" in lower_text:
-                return {"username": username, "taken": True, "status": resp.status}
-
-            # Любые следы профиля — занят
-            markers = ["tgme_page_title", "tgme_page_action", "tgme_page_extra", "tgme_page_context_link"]
-            if any(marker in text for marker in markers):
-                return {"username": username, "taken": True, "status": resp.status}
-
-            # Если ничего нет — свободен
-            return {"username": username, "taken": False, "status": resp.status}
-    except Exception as e:
-        return {"username": username, "taken": None, "error": str(e)}
-
-
-async def check_many(usernames, progress_cb=None):
-    sem = asyncio.Semaphore(CONCURRENCY)
-    results = []
-    done = 0
-    total = len(usernames)
-
-    async with aiohttp.ClientSession() as session:
-        async def worker(u):
-            nonlocal done
-            async with sem:
-                r = await check_username(session, u)
-                await asyncio.sleep(CHECK_DELAY)
-                done += 1
-                if progress_cb:
-                    await progress_cb(done, total, r)
-                return r
-        tasks = [asyncio.create_task(worker(u)) for u in usernames]
-        for coro in asyncio.as_completed(tasks):
-            results.append(await coro)
-    return results
 
 
 def filter_by_params(usernames, length=None, digits=None):

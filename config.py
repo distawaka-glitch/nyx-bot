@@ -8,8 +8,9 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 CHECK_DELAY = float(os.getenv("CHECK_DELAY", "0.8"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "5"))
 
-LENGTH_MIN = 5
-LENGTH_MAX = 6
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+TG_SESSION = os.getenv("TG_SESSION", "")
 
 TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
