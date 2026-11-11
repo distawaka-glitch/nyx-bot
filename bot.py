@@ -5,7 +5,7 @@ import aiosqlite
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from config import BOT_TOKEN
 from checker import (
     check_username_free, try_claim_username, generate_candidates, filter_by_params,
@@ -18,6 +18,7 @@ dp = Dispatcher()
 
 user_state = {}
 free_lists = {} 
+muted_chats = set() # Сюда сохраняются ID заглушенных чатов
 
 settings = {
     "ai": False,
@@ -31,6 +32,7 @@ settings = {
 stop_words = ["скам", "крипта", "инвестиции", "обман"]
 
 ADMINS = {8422944555}
+OWNER_ID = 8422944555
 
 def is_owner(obj) -> bool:
     u = getattr(obj, "from_user", None)
@@ -59,7 +61,6 @@ def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❓ Описание команд", callback_data="help_cmds")],
         [InlineKeyboardButton(text="🗑 Удалённые", callback_data="cmd_deleted"), InlineKeyboardButton(text="✏️ Правки", callback_data="cmd_edits")],
-        [InlineKeyboardButton(text="🖼 Медиа", callback_data="cmd_media")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
         [InlineKeyboardButton(text="🤖 Автоответчик", callback_data="toggle_autoresponder")],
         [InlineKeyboardButton(text="🔍 Поиск юзов", callback_data="search_usernames")],
@@ -96,12 +97,12 @@ async def cmd_help(message: Message):
 async def cmd_deleted(message: Message):
     if not is_owner(message): return
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT username, text FROM history WHERE status = 'deleted' ORDER BY msg_id DESC LIMIT 10") as cursor:
+        async with db.execute("SELECT username, text, media_type FROM history WHERE status = 'deleted' ORDER BY msg_id DESC LIMIT 10") as cursor:
             rows = await cursor.fetchall()
     if not rows: return await message.answer("Нет удалённых сообщений.")
     text = "🗑 **Последние удалённые:**\n\n"
-    for u, t in rows:
-        text += f"От @{u or 'Unknown'}: {t[:50]}...\n"
+    for u, t, m in rows:
+        text += f"От @{u or 'Unknown'} ({m}): {t[:50]}...\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("edits"))
@@ -134,7 +135,7 @@ async def menu_callbacks(call: CallbackQuery):
     elif call.data == "back_to_main":
         await call.message.edit_text("**Главное меню**", reply_markup=main_menu_kb(), parse_mode="Markdown")
     elif call.data == "help_cmds":
-        text = "📖 **Команды:**\n/help\n/find\n/deleted\n/edits"
+        text = "📖 **Команды:**\n/help\n/find\n/deleted\n/edits\n\nВ бизнес-чате:\n.mute — скрыть сообщения\n.unmute — вернуть"
         await call.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu_kb())
     elif call.data == "premium":
         await call.message.edit_text("🌟 Всё бесплатно!", reply_markup=main_menu_kb())
@@ -146,44 +147,130 @@ async def menu_callbacks(call: CallbackQuery):
         await cmd_edits(call.message)
     await call.answer()
 
+# ================= БИЗНЕС-ЛОГИКА: СКАЧИВАНИЕ И ОТПРАВКА БЕЗ ТАЙМЕРА =================
+async def process_and_send_media(message: Message, is_deleted=False):
+    sender = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
+    prefix = "🗑 Удалено" if is_deleted else "📩 Новое"
+    caption = f"{prefix} от {sender}\n\n{message.caption or ''}"
+    
+    try:
+        if message.photo:
+            file_bytes = await bot.download(message.photo[-1])
+            await bot.send_photo(OWNER_ID, BufferedInputFile(file_bytes.read(), filename="photo.jpg"), caption=caption, has_spoiler=True)
+        elif message.video:
+            file_bytes = await bot.download(message.video)
+            await bot.send_video(OWNER_ID, BufferedInputFile(file_bytes.read(), filename="video.mp4"), caption=caption, has_spoiler=True)
+        elif message.voice:
+            file_bytes = await bot.download(message.voice)
+            await bot.send_voice(OWNER_ID, BufferedInputFile(file_bytes.read(), filename="voice.ogg"), caption=caption)
+        elif message.video_note:
+            file_bytes = await bot.download(message.video_note)
+            await bot.send_video_note(OWNER_ID, BufferedInputFile(file_bytes.read(), filename="note.mp4"))
+        elif message.document:
+            file_bytes = await bot.download(message.document)
+            await bot.send_document(OWNER_ID, BufferedInputFile(file_bytes.read(), filename=message.document.file_name or "file"), caption=caption)
+        elif message.animation:
+            file_bytes = await bot.download(message.animation)
+            await bot.send_animation(OWNER_ID, BufferedInputFile(file_bytes.read(), filename="anim.mp4"), caption=caption, has_spoiler=True)
+    except Exception as e:
+        logging.error(f"Не удалось скачать/отправить медиа: {e}")
+        await bot.send_message(OWNER_ID, f"{prefix} от {sender} (файл сгорел или ошибка скачивания)\n\n{caption}")
+
 @dp.business_message()
 async def handle_business_message(message: Message):
     if not settings["savemode"]: return
-    text = message.text or "[Медиа]"
-    media_type = message.content_type
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT OR REPLACE INTO history (chat_id, msg_id, user_id, username, text, media_type, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'active')
-        """, (message.chat.id, message.message_id, message.from_user.id, message.from_user.username, text, media_type))
-        await db.commit()
+    try:
+        text = message.text or message.caption or ""
+        
+        # --- ЛОГИКА .MUTE / .UNMUTE ---
+        if text.strip().lower() == ".mute":
+            muted_chats.add(message.chat.id)
+            try:
+                await bot.delete_business_messages(business_connection_id=message.business_connection_id, message_ids=[message.message_id])
+            except Exception as e:
+                logging.error(f"Не удалось удалить .mute: {e}")
+            await bot.send_message(OWNER_ID, f"🔇 Чат заглушен. Сообщения собеседника будут удаляться и пересылаться тебе.")
+            return
+            
+        if text.strip().lower() == ".unmute":
+            if message.chat.id in muted_chats:
+                muted_chats.remove(message.chat.id)
+            try:
+                await bot.delete_business_messages(business_connection_id=message.business_connection_id, message_ids=[message.message_id])
+            except Exception as e:
+                logging.error(f"Не удалось удалить .unmute: {e}")
+            await bot.send_message(OWNER_ID, f"🔊 Чат разглушен.")
+            return
+
+        # --- ЕСЛИ ЧАТ ЗАГЛУШЕН (собеседник пишет) ---
+        if message.chat.id in muted_chats and message.from_user.id != OWNER_ID:
+            # Пересылаем в ЛС
+            if message.content_type == "text":
+                await bot.send_message(OWNER_ID, f"🔇 Заглушенный чат от {message.from_user.username or message.from_user.id}:\n\n{text}")
+            else:
+                await process_and_send_media(message, is_deleted=False)
+            
+            # Удаляем из чата
+            try:
+                await bot.delete_business_messages(business_connection_id=message.business_connection_id, message_ids=[message.message_id])
+            except Exception as e:
+                logging.error(f"Ошибка удаления в заглушенном чате: {e}")
+            return
+
+        # --- ОБЫЧНОЕ СОХРАНЕНИЕ ---
+        media_type = message.content_type
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO history (chat_id, msg_id, user_id, username, text, media_type, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'active')
+            """, (message.chat.id, message.message_id, message.from_user.id, message.from_user.username, text, media_type))
+            await db.commit()
+
+        if media_type != "text":
+            await process_and_send_media(message, is_deleted=False)
+                
+    except Exception as e:
+        logging.error(f"Ошибка сохранения бизнес-сообщения: {e}")
 
 @dp.edited_business_message()
 async def handle_business_edit(message: Message):
     if not settings["savemode"]: return
-    new_text = message.text or ""
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT text FROM history WHERE chat_id = ? AND msg_id = ?", (message.chat.id, message.message_id)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                old_text = row[0]
-                await db.execute("""
-                    UPDATE history SET old_text = ?, text = ?, status = 'edited' 
-                    WHERE chat_id = ? AND msg_id = ?
-                """, (old_text, new_text, message.chat.id, message.message_id))
-                await db.commit()
+    try:
+        new_text = message.text or message.caption or "[Медиа]"
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT text FROM history WHERE chat_id = ? AND msg_id = ?", (message.chat.id, message.message_id)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    old_text = row[0]
+                    await db.execute("""
+                        UPDATE history SET old_text = ?, text = ?, status = 'edited' 
+                        WHERE chat_id = ? AND msg_id = ?
+                    """, (old_text, new_text, message.chat.id, message.message_id))
+                    await db.commit()
+    except Exception as e:
+        logging.error(f"Ошибка сохранения правки: {e}")
 
 @dp.deleted_business_messages()
 async def handle_business_delete(event):
     if not settings["savemode"]: return
-    async with aiosqlite.connect(DB_PATH) as db:
-        for msg_id in event.message_ids:
-            await db.execute("""
-                UPDATE history SET status = 'deleted' 
-                WHERE chat_id = ? AND msg_id = ?
-            """, (event.chat.id, msg_id))
-        await db.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for msg_id in event.message_ids:
+                async with db.execute("SELECT user_id, username, text, media_type FROM history WHERE chat_id = ? AND msg_id = ?", (event.chat.id, msg_id)) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        user_id, username, text, media_type = row
+                        sender = f"@{username}" if username else f"ID: {user_id}"
+                        if media_type == "text":
+                            await bot.send_message(OWNER_ID, f"🗑 Удалено от {sender}:\n\n{text}")
+                        else:
+                            await bot.send_message(OWNER_ID, f"🗑 Удалено медиа от {sender} (сохранено выше)")
+                        await db.execute("UPDATE history SET status = 'deleted' WHERE chat_id = ? AND msg_id = ?", (event.chat.id, msg_id))
+            await db.commit()
+    except Exception as e:
+        logging.error(f"Ошибка при удалении: {e}")
 
+# ================= ПОИСК ЮЗОВ =================
 @dp.message(Command("find"))
 async def cmd_find(msg: Message):
     if not is_owner(msg): return await msg.answer("доступ закрыт")
