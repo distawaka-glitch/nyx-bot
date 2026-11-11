@@ -16,28 +16,72 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 user_state = {}
-free_lists = {} # Хранит списки свободных ников для каждого юзера
-
+free_lists = {} 
 ADMINS = {8422944555, 8769561220, 6646589541}
 
 def is_owner(obj) -> bool:
     u = getattr(obj, "from_user", None)
     return u is not None and u.id in ADMINS
 
-def menu_kb() -> InlineKeyboardMarkup:
+# ================= МЕНЮ /HELP =================
+def main_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❓ Описание команд", callback_data="help_cmds")],
+        [InlineKeyboardButton(text="💬 Диалоги", callback_data="dialogs")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton(text="🤖 Автоответчик", callback_data="autoresponder")],
+        [InlineKeyboardButton(text="🔍 Поиск юзов", callback_data="search_usernames")],
+        [InlineKeyboardButton(text="🌟 Премиум функционал", callback_data="premium")]
+    ])
+
+def settings_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 ИИ", callback_data="set_ai")],
+        [InlineKeyboardButton(text="🎙 Голосовые", callback_data="set_voice")],
+        [InlineKeyboardButton(text="⚠️ Антискам", callback_data="set_antiscam")],
+        [InlineKeyboardButton(text="🔫 Тесак Фильтр", callback_data="set_filter")],
+        [InlineKeyboardButton(text="🖼 Загрузка видео", callback_data="set_video")],
+        [InlineKeyboardButton(text="« Назад", callback_data="back_to_main")]
+    ])
+
+def search_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="5 букв", callback_data="len_5"), InlineKeyboardButton(text="6 букв", callback_data="len_6"), InlineKeyboardButton(text="любая", callback_data="len_any")],
         [InlineKeyboardButton(text="с цифрами", callback_data="dig_yes"), InlineKeyboardButton(text="без цифр", callback_data="dig_no"), InlineKeyboardButton(text="не важно", callback_data="dig_any")],
-        [InlineKeyboardButton(text="команда /find", callback_data="run")],
+        [InlineKeyboardButton(text="Запустить поиск /find", callback_data="run")],
+        [InlineKeyboardButton(text="« Назад", callback_data="back_to_main")]
     ])
 
 @dp.message(Command("start"))
 async def cmd_start(msg: Message):
     if not is_owner(msg):
         return await msg.answer("доступ закрыт")
-    user_state[msg.from_user.id] = {"length": None, "digits": None}
-    await msg.answer("настрой параметры:\nзатем: /find калаш лампа ников\nили просто /find (без слов) для случайных", reply_markup=menu_kb())
+    await msg.answer("Привет! Я твой бизнес-ассистент и бот для поиска юзов.\nНапиши /help для меню или /find для поиска.")
 
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    if not is_owner(message):
+        return await message.answer("доступ закрыт")
+    await message.answer(
+        "**Ваши настройки**\nВыберите раздел для управления:",
+        reply_markup=main_menu_kb(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.in_({"settings", "back_to_main", "search_usernames", "dialogs", "autoresponder", "premium"}))
+async def menu_callbacks(call: CallbackQuery):
+    if call.data == "settings":
+        await call.message.edit_text("**Ваши настройки**\nНастройте функции под себя:", reply_markup=settings_kb(), parse_mode="Markdown")
+    elif call.data == "search_usernames":
+        user_state[call.from_user.id] = {"length": None, "digits": None}
+        await call.message.edit_text("**Поиск юзернеймов**\nНастройте параметры:", reply_markup=search_kb(), parse_mode="Markdown")
+    elif call.data == "back_to_main":
+        await call.message.edit_text("**Ваши настройки**\nВыберите раздел:", reply_markup=main_menu_kb(), parse_mode="Markdown")
+    else:
+        await call.answer("В разработке...", show_alert=True)
+    await call.answer()
+
+# ================= ЛОГИКА ПОИСКА ЮЗОВ =================
 @dp.message(Command("find"))
 async def cmd_find(msg: Message):
     if not is_owner(msg):
@@ -49,7 +93,7 @@ async def cmd_find(msg: Message):
     digits = st.get("digits")
     
     if not length and not words:
-        return await msg.answer("выбери длину через кнопки выше")
+        return await msg.answer("выбери длину через кнопки в /help или передай слова: /find калаш")
 
     status = await msg.answer("генерирую кандидатов...")
     cands = []
@@ -74,26 +118,21 @@ async def cmd_find(msg: Message):
         
         if await check_username_free(u):
             free.append(u)
-        await asyncio.sleep(0.5) # Пауза, чтобы не забанили
+        await asyncio.sleep(0.5)
 
     if not free:
         return await status.edit_text("свободных не найдено.")
 
-    # Сохраняем список для этого юзера
     free_lists[msg.from_user.id] = free
-    
     text = f"Найдено свободных: {len(free)}\n\n"
     for i, u in enumerate(free[:50]):
         text += f"{i+1}. @{u}\n"
     text += "\nНапиши номер, чтобы занять ник (например, 1):"
-    
     await status.edit_text(text)
 
 @dp.message(F.text.regexp(r'^\d+$'))
 async def handle_number_choice(msg: Message):
-    if not is_owner(msg):
-        return
-    
+    if not is_owner(msg): return
     if msg.from_user.id not in free_lists:
         return await msg.answer("нет активного списка. сначала напиши /find")
     
@@ -110,29 +149,11 @@ async def handle_number_choice(msg: Message):
     
     ok, result = await try_claim_username(username)
     if ok:
-        # Удаляем занятый ник из списка
         free.pop(index)
         free_lists[msg.from_user.id] = free
         await msg.answer(f"Успех! Канал создан: t.me/{username}")
     else:
         await msg.answer(f"Не удалось: {result}")
-
-@dp.message(Command("check"))
-async def cmd_check(msg: Message):
-    if not is_owner(msg):
-        return await msg.answer("доступ закрыт")
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await msg.answer("формат: /check nick1 nick2")
-    usernames = [u.strip().lstrip("@").lower() for u in parts[1].split()]
-    status = await msg.answer(f"проверяю {len(usernames)}...")
-    lines = []
-    for u in usernames:
-        if await check_username_free(u):
-            lines.append(f"@{u} свободен")
-        else:
-            lines.append(f"@{u} занят")
-    await status.edit_text("\n".join(lines)[:4000])
 
 @dp.callback_query(F.data.startswith(("len_", "dig_", "run")))
 async def on_callback(cb: CallbackQuery):
@@ -148,14 +169,34 @@ async def on_callback(cb: CallbackQuery):
     elif data == "dig_no": st["digits"] = False
     elif data == "dig_any": st["digits"] = None
     elif data == "run":
-        await cb.answer("используй /find слово1 слово2 или просто /find")
+        await cb.answer("напиши /find в чат чтобы начать")
         return
     await cb.message.edit_text(
-        f"параметры:\nдлина: {st['length'] or 'любая'}\nцифры: {'с цифрами' if st['digits'] is True else 'без цифр' if st['digits'] is False else 'не важно'}\n\nтеперь: /find калаш лампа ников",
-        reply_markup=menu_kb(),
+        f"**Поиск юзернеймов**\nдлина: {st['length'] or 'любая'}\nцифры: {'с цифрами' if st['digits'] is True else 'без цифр' if st['digits'] is False else 'не важно'}\n\nНапиши /find чтобы начать",
+        reply_markup=search_kb(),
+        parse_mode="Markdown"
     )
     await cb.answer()
 
+# ================= БИЗНЕС-ЛОГИКА (АВТООТВЕТЧИК) =================
+@dp.business_message()
+async def handle_business_message(message: Message):
+    # Сюда приходят все сообщения из твоего бизнес-аккаунта.
+    # Если человек написал тебе, бот может автоматически ответить.
+    user_id = message.from_user.id
+    text = message.text or ""
+    
+    logging.info(f"Business message from {user_id}: {text}")
+    
+    # Пример автоответчика (если слово "цена")
+    if "цена" in text.lower():
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text="Здравствуйте! Актуальный прайс можно узнать у менеджера.",
+            business_connection_id=message.business_connection_id
+        )
+
+# ================= ВЕБ-СЕРВЕР (KEEP-ALIVE) =================
 async def health(request):
     return web.Response(text="ok")
 
