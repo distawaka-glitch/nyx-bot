@@ -7,14 +7,16 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN
 from checker import (
-    try_claim_username, generate_candidates, filter_by_params,
+    check_username_free, try_claim_username, generate_candidates, filter_by_params,
     generate_random, generate_random_digits
 )
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
 user_state = {}
+free_lists = {} # Хранит списки свободных ников для каждого юзера
 
 ADMINS = {8422944555, 8769561220, 6646589541}
 
@@ -45,8 +47,9 @@ async def cmd_find(msg: Message):
     st = user_state.setdefault(msg.from_user.id, {"length": None, "digits": None})
     length = st.get("length")
     digits = st.get("digits")
+    
     if not length and not words:
-        return await msg.answer("выбери длину (5, 6 или любая) через кнопки выше")
+        return await msg.answer("выбери длину через кнопки выше")
 
     status = await msg.answer("генерирую кандидатов...")
     cands = []
@@ -62,18 +65,57 @@ async def cmd_find(msg: Message):
     if not filtered:
         return await status.edit_text("нет кандидатов.")
 
-    await status.edit_text(f"проверяю и занимаю {len(filtered)} ников...")
-    success = []
+    await status.edit_text(f"проверяю {len(filtered)} ников на свободность...")
+    free = []
+    
     for i, u in enumerate(filtered):
         if i % 5 == 0:
-            await status.edit_text(f"проверяю {i}/{len(filtered)}...\nзанято: {len(success)}")
-        ok, result = await try_claim_username(u)
-        if ok:
-            success.append(result)
-            await asyncio.sleep(1.5)
+            await status.edit_text(f"проверяю {i}/{len(filtered)}... свободно: {len(free)}")
+        
+        if await check_username_free(u):
+            free.append(u)
+        await asyncio.sleep(0.5) # Пауза, чтобы не забанили
 
-    text = f"Успешно занято: {len(success)}\n\n" + "\n".join(success) if success else "Не удалось занять ни один ник."
-    await status.edit_text(text[:4000])
+    if not free:
+        return await status.edit_text("свободных не найдено.")
+
+    # Сохраняем список для этого юзера
+    free_lists[msg.from_user.id] = free
+    
+    text = f"Найдено свободных: {len(free)}\n\n"
+    for i, u in enumerate(free[:50]):
+        text += f"{i+1}. @{u}\n"
+    text += "\nНапиши номер, чтобы занять ник (например, 1):"
+    
+    await status.edit_text(text)
+
+@dp.message(F.text.regexp(r'^\d+$'))
+async def handle_number_choice(msg: Message):
+    if not is_owner(msg):
+        return
+    
+    if msg.from_user.id not in free_lists:
+        return await msg.answer("нет активного списка. сначала напиши /find")
+    
+    free = free_lists[msg.from_user.id]
+    try:
+        index = int(msg.text) - 1
+        if index < 0 or index >= len(free):
+            return await msg.answer(f"неверный номер. введи от 1 до {len(free)}")
+    except:
+        return await msg.answer("введи число")
+    
+    username = free[index]
+    await msg.answer(f"занимаю @{username}...")
+    
+    ok, result = await try_claim_username(username)
+    if ok:
+        # Удаляем занятый ник из списка
+        free.pop(index)
+        free_lists[msg.from_user.id] = free
+        await msg.answer(f"Успех! Канал создан: t.me/{username}")
+    else:
+        await msg.answer(f"Не удалось: {result}")
 
 @dp.message(Command("check"))
 async def cmd_check(msg: Message):
@@ -86,8 +128,10 @@ async def cmd_check(msg: Message):
     status = await msg.answer(f"проверяю {len(usernames)}...")
     lines = []
     for u in usernames:
-        ok, result = await try_claim_username(u)
-        lines.append(result)
+        if await check_username_free(u):
+            lines.append(f"@{u} свободен")
+        else:
+            lines.append(f"@{u} занят")
     await status.edit_text("\n".join(lines)[:4000])
 
 @dp.callback_query(F.data.startswith(("len_", "dig_", "run")))

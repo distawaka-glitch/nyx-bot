@@ -3,30 +3,45 @@ import random
 import string
 from telethon import TelegramClient, functions, errors
 from telethon.sessions import StringSession
-from telethon.tl.types import InputPeerChannel
+from telethon.tl.types import InputPeerChannel, InputPeerEmpty, InputChannel
 from config import API_ID, API_HASH, TG_SESSION, TRANSLIT, PERSONALITY_SUFFIXES
 
 client = TelegramClient(StringSession(TG_SESSION), API_ID, API_HASH)
 
+async def check_username_free(username: str) -> bool:
+    """Возвращает True, если ник свободен, False если занят"""
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False
+        
+        # Проверяем через CheckUsername, но для этого нужен канал.
+        # Поэтому просто пытаемся найти юзернейм через ResolveUsername (если найдет - занят)
+        try:
+            await client(functions.contacts.ResolveUsernameRequest(username=username))
+            return False # Нашел - значит занят
+        except errors.rpcerrorlist.UsernameNotOccupiedError:
+            return True # Не найден - свободен
+        except Exception:
+            return False # Ошибка - считаем занятым
+    except:
+        return False
+
 async def try_claim_username(username: str):
+    """Пытается создать канал и назначить ему юзернейм"""
     try:
         await client.connect()
         if not await client.is_user_authorized():
             return False, "сессия не авторизована"
 
+        # 1. Создаем канал
         result = await client(functions.channels.CreateChannelRequest(
             title=f"claim_{username}", about="temp", megagroup=False
         ))
         channel = result.chats[0]
         peer = InputPeerChannel(channel.id, channel.access_hash)
 
-        check = await client(functions.channels.CheckUsernameRequest(
-            channel=peer, username=username
-        ))
-        if not check:
-            await client(functions.channels.DeleteChannelRequest(channel=peer))
-            return False, f"@{username} занят"
-
+        # 2. Занимаем ник
         await client(functions.channels.UpdateUsernameRequest(
             channel=peer, username=username
         ))
